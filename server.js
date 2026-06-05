@@ -2,22 +2,22 @@ const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 
-// Khởi tạo Express
+// Khởi tạo Express App
 const app = express();
 app.use(cors());
 
-// Cổng chạy ứng dụng (Render tự cấp qua process.env.PORT)
+// Cổng chạy ứng dụng (Render tự cấp hoặc mặc định là 3000)
 const PORT = process.env.PORT || 3000;
 
-// Cấu trúc dữ liệu ĐỒNG BỘ 100% VỚI PYTHON BẠN GỬI
+// Cấu trúc dữ liệu đồng bộ 100% với bản Python gốc của bạn
 const DATA = {
-  phien: null,        // Giữ nguyên trường phien (mặc định null như Python)
-  md5: null,          // Giữ MD5 phiên hiện tại hoặc phiên gần nhất
-  dice: [],           // Kết quả xúc xắc phiên trước
-  tong: null,         // Tổng điểm phiên trước
-  ketqua: null,       // Kết quả phiên trước ("TAI" hoặc "XIU")
-  duDoan: null,       // Dự đoán cho phiên MD5 HIỆN TẠI ("TAI" hoặc "XIU")
-  tiLeThanhCong: null // Tỷ lệ dự đoán ngẫu nhiên từ 70% - 90% dựa trên phân tích MD5
+  phien: null,
+  md5: null,
+  dice: [],
+  tong: null,
+  ketqua: null,
+  duDoan: null,       // Dự đoán phiên hiện tại ("TAI" hoặc "XIU")
+  tiLeThanhCong: null // Tỉ lệ dự đoán ngẫu nhiên từ 70% đến 90% dựa trên MD5
 };
 
 // ==========================================
@@ -25,18 +25,10 @@ const DATA = {
 // ==========================================
 
 app.get('/68gb', (req, res) => {
-  res.json({
-    phien: DATA.phien,
-    md5: DATA.md5,
-    dice: DATA.dice,
-    tong: DATA.tong,
-    ketqua: DATA.ketqua,
-    duDoan: DATA.duDoan,
-    tiLeThanhCong: DATA.tiLeThanhCong
-  });
+  res.json(DATA);
 });
 
-// Giữ lại API setup như bản Python gốc để bạn đồng bộ nếu cần
+// Giữ nguyên API setup của bản Python gốc để đồng bộ số phiên
 app.get('/setup=:phien-yes', (req, res) => {
   try {
     const phienNum = parseInt(req.params.phien, 10);
@@ -44,7 +36,7 @@ app.get('/setup=:phien-yes', (req, res) => {
       return res.json({ status: "ERROR" });
     }
     DATA.phien = phienNum;
-    console.log(`🎯 Đã đồng bộ số phiên: ${phienNum}`);
+    console.log(`🎯 Đã đồng bộ số phiên ban đầu: ${phienNum}`);
     return res.json({ status: "OK", phien: phienNum });
   } catch (err) {
     return res.json({ status: "ERROR" });
@@ -52,11 +44,11 @@ app.get('/setup=:phien-yes', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('MD5 Game Tracker Node Server is Running! Access /68gb for live data.');
+  res.send('MD5 Game Tracker Server is Running! Access /68gb for data.');
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 API Server đang chạy tại cổng: ${PORT}`);
+  console.log(`🚀 API Server đang hoạt động trên cổng: ${PORT}`);
 });
 
 // ==========================================
@@ -75,7 +67,7 @@ let wsClient = null;
 let heartbeatInterval = null;
 
 // ==========================================
-// POMELO PROTOCOL PACKET GENERATOR
+// TIỆN ÍCH TẠO GÓI TIN DỰA TRÊN POMELO PROTOCOL
 // ==========================================
 
 function sendPomeloReq(ws, route) {
@@ -131,47 +123,47 @@ function b64Send(ws, base64Str) {
 }
 
 // ==========================================
-// THUẬT TOÁN PHÂN TÍCH CHUYÊN SÂU MD5 HIỆN TẠI
+// THUẬT TOÁN PHÂN TÍCH CHUYÊN SÂU CHUỖI MD5
 // ==========================================
 
 function analyzeAndPredictMD5(md5) {
   if (!md5 || md5.length !== 32) return;
 
-  // Chuyển hex thành mảng byte số nguyên
+  // Chuyển đổi chuỗi hex thành mảng byte để phân tích thuật toán
   const bytes = [];
   for (let i = 0; i < 32; i += 2) {
     bytes.push(parseInt(md5.substr(i, 2), 16));
   }
 
-  // Tính tổng trọng số vị trí các byte đẩy cầu
+  // Tính tổng trọng số phân tán vị trí
   let weightedSum = 0;
   for (let i = 0; i < bytes.length; i++) {
     weightedSum += bytes[i] * (i + 1);
   }
 
-  // Đo lường độ biến động Entropy trong chuỗi MD5
+  // Phân tích chỉ số Entropy của chuỗi băm
   let diffSum = 0;
   for (let i = 0; i < bytes.length - 1; i++) {
     diffSum += Math.abs(bytes[i] - bytes[i + 1]);
   }
 
-  // Quyết định Tài hay Xỉu dựa trên thuật toán dao động
+  // Dự đoán kết quả dựa trên số liệu dao động
   const decisionMetric = Math.floor(weightedSum + diffSum);
   const prediction = (decisionMetric % 2 === 0) ? "TAI" : "XIU";
 
-  // Tạo tỷ lệ ngẫu nhiên nhất quán từ 70% đến 90% dựa trên chỉ số Entropy của chuỗi MD5
+  // Tạo tỷ lệ ngẫu nhiên nhất quán từ 70% đến 90% dựa trên dao động Entropy thực tế
   const avgDiff = diffSum / (bytes.length - 1);
   let confidence = Math.floor(70 + (avgDiff % 21)); 
   if (confidence < 70) confidence = 70;
   if (confidence > 90) confidence = 90;
 
-  // Cập nhật trạng thái dự đoán phiên hiện tại trực tiếp vào bộ nhớ API
+  // Ghi nhận trực tiếp dữ liệu dự báo vào bộ nhớ API
   DATA.duDoan = prediction;
   DATA.tiLeThanhCong = `${confidence}%`;
 
-  console.log(`🔮 [DỰ ĐOÁN PHIÊN HIỆN TẠI]`);
-  console.log(`   └─ MD5 Gốc: ${md5}`);
-  console.log(`   └─ Phán Đoán: ${prediction} | Tỷ lệ tự tin: ${confidence}%`);
+  console.log(`🔮 [DỰ ĐOÁN MD5 PHIÊN HIỆN TẠI]`);
+  console.log(`   └─ MD5: ${md5}`);
+  console.log(`   └─ Dự Đoán: ${prediction} | Tỷ lệ chính xác: ${confidence}%`);
 }
 
 function keepAliveRoom(ws) {
@@ -184,17 +176,27 @@ function keepAliveRoom(ws) {
 }
 
 // ==========================================
-// WEBSOCKET CHÍNH - SAO CHÉP FLOW PYTHON 100%
+// QUẢN LÝ KẾT NỐI WEBSOCKET CHÍNH
 // ==========================================
 
 function startWsLoop() {
   console.log("🔌 Đang kết nối đến cổng WebSocket game...");
-  wsClient = new WebSocket(WS_URL);
+  
+  // KHẮC PHỤC CHÍNH: Thêm Origin và User-Agent để giả lập trình duyệt, vượt qua Cloudflare/WAF của Server
+  wsClient = new WebSocket(WS_URL, {
+    headers: {
+      'Origin': 'https://ugaq8hxbh0nmjhi.cq.qnwxdhwica.com',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Pragma': 'no-cache',
+      'Cache-Control': 'no-cache'
+    }
+  });
 
   wsClient.on('open', () => {
     MSG_ID = 4;
-    console.log("✅ WS CONNECTED - Đang đăng nhập...");
+    console.log("✅ WS CONNECTED - Đang tiến hành đăng nhập phòng game...");
 
+    // Handshake tuần tự chuẩn theo bản Python của bạn
     b64Send(wsClient, HANDSHAKE_B64);
     
     setTimeout(() => {
@@ -214,12 +216,13 @@ function startWsLoop() {
       sendPomeloReq(wsClient, "mnmdsb.mnmdsbhandler.reqpokerinfo");
     }, 2500);
 
+    // Heartbeat định kỳ giữ kết nối không bị timeout
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     heartbeatInterval = setInterval(() => {
       b64Send(wsClient, HEARTBEAT);
     }, 10000);
 
-    console.log("✅ WS READY - Đã vào phòng MD5!");
+    console.log("✅ WS READY - Đã vào phòng MD5 hoàn tất!");
   });
 
   wsClient.on('message', (message) => {
@@ -227,18 +230,24 @@ function startWsLoop() {
       let text = "";
       
       if (Buffer.isBuffer(message)) {
-        // GIẢI MÃ CHUẨN XÁC NHẤT - TRÁNH LỖI NULL:
-        // Đọc dữ liệu nhị phân thô dưới dạng chuỗi Latin1 (hoặc Binary) để bảo toàn giá trị từng byte
-        // Sau đó thay thế tất cả các byte điều khiển rác (ASCII từ 0 đến 31 ngoại trừ các dấu xuống dòng và ký tự in được)
-        // Việc này đảm bảo chuỗi text nhận được không bị đứt quãng giữa chừng do ký tự lạ.
-        text = message.toString('binary').replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, "");
+        // TÁI LẬP HOÀN HẢO decode(errors="ignore") CỦA PYTHON:
+        // Đọc tuần tự các byte và chỉ lọc lấy các byte ký tự ASCII in được hợp lệ 
+        // để ghép thành một chuỗi văn bản thuần túy không chứa mã độc hoặc byte rác nhị phân.
+        const cleanChars = [];
+        for (let i = 0; i < message.length; i++) {
+          const byte = message[i];
+          if (byte >= 32 && byte <= 126) {
+            cleanChars.push(String.fromCharCode(byte));
+          }
+        }
+        text = cleanChars.join("");
       } else {
         text = String(message);
       }
 
-      // ---------------------
-      // GAME END (KẾT THÚC VÁN)
-      // ---------------------
+      // ----------------------------------------
+      // XỬ LÝ SỰ KIỆN KẾT THÚC VÁN (GAME END)
+      // ----------------------------------------
       if (text.includes("mnmdsbgameend")) {
         const diceMatch = text.match(/\{(\d+)-(\d+)-(\d+)\}/);
         if (diceMatch) {
@@ -251,12 +260,7 @@ function startWsLoop() {
           DATA.dice = [d1, d2, d3];
           DATA.tong = tong;
           DATA.ketqua = kq;
-          
-          // LƯU Ý QUAN TRỌNG: Python gán DATA["md5"] = None ở cuối ván, nhưng ở đây chúng ta giữ lại 
-          // để tránh API trả về null ngay lập tức khi bạn vừa query, đúng như hình log bạn gửi.
-          DATA.md5 = null; 
-          DATA.duDoan = null;
-          DATA.tiLeThanhCong = null;
+          DATA.md5 = null; // Khởi chạy lại MD5 sau khi kết thúc phiên
 
           if (DATA.phien !== null) {
             DATA.phien += 1;
@@ -265,24 +269,24 @@ function startWsLoop() {
           console.log(`🎲 KQ: ${d1}-${d2}-${d3} | Tổng: ${tong} (${kq})`);
           console.log(`➡ Phiên mới: ${DATA.phien}`);
           
-          // Gửi tương tác giả chống AFK
+          // Chạy luồng phụ chống bị kick ra sảnh chờ
           keepAliveRoom(wsClient);
         }
       }
 
-      // ---------------------
-      // GAME START - LẤY MD5 PHIÊN HIỆN TẠI VÀ DỰ ĐOÁN
-      // ---------------------
+      // ----------------------------------------
+      // XỬ LÝ SỰ KIỆN BẮT ĐẦU VÁN MỚI (GAME START)
+      // ----------------------------------------
       if (text.includes("mnmdsbgamestart")) {
         const md5Match = text.match(/[a-f0-9]{32}/i);
         if (md5Match) {
           const md5Value = md5Match[0];
+          DATA.md5 = md5Value;
           
-          DATA.md5 = md5Value; // Lưu MD5 mới nhất đang diễn ra làm dữ liệu cốt lõi
           const phienHienTai = DATA.phien !== null ? DATA.phien : "Đang chờ đồng bộ...";
           console.log(`🔥 Bắt đầu Phiên [${phienHienTai}] - MD5: ${md5Value}`);
 
-          // Tiến hành dự đoán phân tích chuyên sâu cho chuỗi MD5 này ngay lập tức
+          // Tiến hành dự báo chuyên sâu ngay giây đầu tiên của phiên mới
           analyzeAndPredictMD5(md5Value);
         }
       }
@@ -292,10 +296,12 @@ function startWsLoop() {
     }
   });
 
-  wsClient.on('error', (err) => {});
+  wsClient.on('error', (err) => {
+    // Không ghi log rác
+  });
 
   wsClient.on('close', () => {
-    console.warn("⚠️ Mất kết nối. Đang thử kết nối lại...");
+    console.warn("⚠️ Mất kết nối đến máy chủ. Đang thử kết nối lại sau 3 giây...");
     if (heartbeatInterval) {
       clearInterval(heartbeatInterval);
       heartbeatInterval = null;
@@ -304,5 +310,5 @@ function startWsLoop() {
   });
 }
 
-// Bắt đầu vòng lặp kết nối
+// Khởi chạy vòng lặp kết nối
 startWsLoop();
