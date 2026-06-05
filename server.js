@@ -23,11 +23,11 @@ const DATA = {
 // API ENDPOINTS
 // ==========================================
 
-@app.get('/68gb', (req, res) => {
+app.get('/68gb', (req, res) => {
   res.json(DATA);
 });
 
-@app.get('/', (req, res) => {
+app.get('/', (req, res) => {
   res.send('MD5 Game Tracker Node Server is Running! Access /68gb for live data.');
 });
 
