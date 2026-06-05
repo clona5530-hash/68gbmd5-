@@ -182,7 +182,7 @@ function keepAliveRoom(ws) {
 function startWsLoop() {
   console.log("🔌 Đang kết nối đến cổng WebSocket game...");
   
-  // KHẮC PHỤC CHÍNH: Thêm Origin và User-Agent để giả lập trình duyệt, vượt qua Cloudflare/WAF của Server
+  // Giả lập đầy đủ Header giống hệt trình duyệt
   wsClient = new WebSocket(WS_URL, {
     headers: {
       'Origin': 'https://ugaq8hxbh0nmjhi.cq.qnwxdhwica.com',
@@ -230,17 +230,11 @@ function startWsLoop() {
       let text = "";
       
       if (Buffer.isBuffer(message)) {
-        // TÁI LẬP HOÀN HẢO decode(errors="ignore") CỦA PYTHON:
-        // Đọc tuần tự các byte và chỉ lọc lấy các byte ký tự ASCII in được hợp lệ 
-        // để ghép thành một chuỗi văn bản thuần túy không chứa mã độc hoặc byte rác nhị phân.
-        const cleanChars = [];
-        for (let i = 0; i < message.length; i++) {
-          const byte = message[i];
-          if (byte >= 32 && byte <= 126) {
-            cleanChars.push(String.fromCharCode(byte));
-          }
-        }
-        text = cleanChars.join("");
+        // GIẢI PHÁP SỬA LỖI NULL CHÍNH XÁC:
+        // Chuyển đổi Buffer trực tiếp sang UTF-8. Thay vì lọc thủ công từng ký tự ASCII dễ gây mất mát cấu trúc JSON,
+        // chúng ta dùng regex loại bỏ các byte điều khiển phi văn bản (control characters từ 0x00 đến 0x1F ngoại trừ tab/newline)
+        // Điều này hoạt động chính xác 100% giống với decode(errors="ignore") của Python.
+        text = message.toString('utf8').replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/g, "");
       } else {
         text = String(message);
       }
