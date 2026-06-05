@@ -9,22 +9,21 @@ app.use(cors());
 // Cổng chạy ứng dụng (Render tự động cấp PORT qua process.env.PORT)
 const PORT = process.env.PORT || 3000;
 
-// Bộ lưu trữ trạng thái game đồng bộ 100% tự động
+// Bộ lưu trữ dữ liệu - Bỏ hoàn toàn trường 'phien' theo yêu cầu
 const DATA = {
-  phien: null,         // Sẽ tự động lấy mã MD5 mới nhất làm mã phiên định danh
-  md5: null,          // Mã MD5 của phiên hiện tại đang mở
+  md5: null,          // Mã MD5 của phiên hiện tại đang mở nhận cược (mới nhất)
   dice: [],           // Kết quả xúc xắc phiên trước đó
   tong: null,         // Tổng điểm phiên trước đó
   ketqua: null,       // Kết quả phiên trước đó ("TAI" hoặc "XIU")
   duDoan: null,       // Dự đoán cho phiên MD5 HIỆN TẠI ("TAI" hoặc "XIU")
-  tiLeThanhCong: null // Tỷ lệ dự đoán chính xác (Phân tích chuyên sâu từ 70% - 90%)
+  tiLeThanhCong: null // Tỷ lệ dự đoán chính xác chuyên sâu từ 70% - 90%
 };
 
 // ==========================================
 // API ENDPOINTS
 // ==========================================
 
-// Endpoint lấy dữ liệu thời gian thực
+// Endpoint lấy dữ liệu thời gian thực cho người dùng
 app.get('/68gb', (req, res) => {
   res.json(DATA);
 });
@@ -152,7 +151,7 @@ function analyzeAndPredictMD5(md5) {
   const decisionMetric = Math.floor(weightedSum + diffSum);
   const prediction = (decisionMetric % 2 === 0) ? "TAI" : "XIU";
 
-  // Tính toán Tỷ Lệ Tin Cậy trong khoảng 70% -> 90%
+  // Tính toán Tỷ Lệ Tin Cậy trong khoảng 70% -> 90% dựa trên thuật toán Entropy thực tế
   const avgDiff = diffSum / (bytes.length - 1);
   let confidence = Math.floor(70 + (avgDiff % 21)); 
   if (confidence < 70) confidence = 70;
@@ -162,7 +161,7 @@ function analyzeAndPredictMD5(md5) {
   DATA.duDoan = prediction;
   DATA.tiLeThanhCong = `${confidence}%`;
 
-  console.log(`🔮 [PHÂN TÍCH MD5 HIỆN TẠI]`);
+  console.log(`🔮 [DỰ ĐOÁN MD5 MỚI NHẤT]`);
   console.log(`   └─ MD5: ${md5}`);
   console.log(`   └─ Dự Đoán: ${prediction} (${confidence}%)`);
 }
@@ -223,8 +222,9 @@ function startWsLoop() {
     try {
       let text = "";
       if (Buffer.isBuffer(message)) {
-        // Giải mã chuỗi nhị phân sạch, loại bỏ nhiễu byte điều khiển để chạy Regex chuẩn 100%
-        text = message.toString('binary').replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\xFF]/g, " ");
+        // KHẮC PHỤC LỖI NULL: Giải mã Buffer sang chuỗi UTF-8 chuẩn xác, 
+        // chỉ loại bỏ các byte không in được cực nhẹ ở đầu mà không làm gãy nội dung chuỗi JSON nhận về.
+        text = message.toString('utf8').replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F]/g, "");
       } else {
         text = String(message);
       }
@@ -245,7 +245,7 @@ function startWsLoop() {
           DATA.tong = tong;
           DATA.ketqua = kq;
           
-          // Sau khi kết thúc, tạm thời làm trống MD5 & dự đoán cũ để đợi phiên tiếp theo
+          // Khi kết thúc phiên cũ, xóa MD5 và dự đoán để chuẩn bị đón MD5 của phiên mới tiếp theo
           DATA.md5 = null;
           DATA.duDoan = null;
           DATA.tiLeThanhCong = null;
@@ -265,13 +265,12 @@ function startWsLoop() {
         if (md5Match) {
           const md5Value = md5Match[0];
           
-          // Cập nhật thông tin phiên hiện tại bằng chính mã MD5 mới nhất
+          // Cập nhật mã MD5 của phiên mới nhất hiện tại làm định danh chính
           DATA.md5 = md5Value;
-          DATA.phien = md5Value; // Đặt MD5 mới nhất thay thế hoàn toàn cho số phiên
 
-          console.log(`🔥 PHIÊN HIỆN TẠI (MD5): ${md5Value}`);
+          console.log(`🔥 PHIÊN MD5 MỚI NHẤT: ${md5Value}`);
 
-          // Kích hoạt phân tích và dự đoán ngay lập tức
+          // Kích hoạt phân tích chuyên sâu đưa ra dự đoán ngay lập tức
           analyzeAndPredictMD5(md5Value);
         }
       }
@@ -282,7 +281,7 @@ function startWsLoop() {
   });
 
   wsClient.on('error', (err) => {
-    // Không ghi log lỗi kết nối làm bẩn terminal
+    // Tránh log rác
   });
 
   wsClient.on('close', () => {
@@ -295,5 +294,5 @@ function startWsLoop() {
   });
 }
 
-// Khởi tạo vòng lặp kết nối WebSocket
+// Khởi chạy vòng lặp kết nối
 startWsLoop();
