@@ -20,7 +20,6 @@ const DATA = {
 // API ENDPOINTS
 // ======================
 app.get("/68gb", (req, res) => {
-    // Thêm dự đoán vào response
     const response = { ...DATA };
     if (DATA.md5) {
         response.prediction = predictFromMD5(DATA.md5);
@@ -39,69 +38,73 @@ app.get("/setup=:phien-yes", (req, res) => {
 });
 
 // ======================
+// API TEST MD5 - Dự đoán trực tiếp
+// ======================
+app.get("/test/:md5", (req, res) => {
+    const md5 = req.params.md5;
+    
+    // Kiểm tra MD5 hợp lệ (32 ký tự hex)
+    if (!/^[a-f0-9]{32}$/.test(md5)) {
+        return res.json({ 
+            error: "MD5 không hợp lệ! Cần 32 ký tự hex.",
+            example: "/test/08a1dd8856b5a5386a792e380a8380c8"
+        });
+    }
+    
+    DATA.md5 = md5;
+    const prediction = predictFromMD5(md5);
+    
+    res.json({
+        md5: md5,
+        prediction: prediction,
+        message: "Dự đoán thành công! Xem /68gb để lấy dữ liệu đầy đủ."
+    });
+});
+
+// ======================
 // MD5 DỰ ĐOÁN TÀI XỈU
 // ======================
 function predictFromMD5(md5) {
-    // Phân tích MD5
     const hexPairs = md5.match(/.{2}/g) || [];
     const nums = hexPairs.map(h => parseInt(h, 16));
     
-    // Tính toán các chỉ số
     const sum = nums.reduce((a, b) => a + b, 0);
     const evenCount = nums.filter(n => n % 2 === 0).length;
     const oddCount = nums.filter(n => n % 2 === 1).length;
     const highCount = nums.filter(n => n > 127).length;
     const lowCount = nums.filter(n => n <= 127).length;
     
-    // XOR tất cả
     let xorVal = 0;
     nums.forEach(n => xorVal ^= n);
     
-    // Đếm bit 1
     let bitCount = 0;
     nums.forEach(n => {
         bitCount += n.toString(2).split('1').length - 1;
     });
     
-    // Tổng nửa đầu và nửa sau
     const firstHalf = nums.slice(0, 8).reduce((a, b) => a + b, 0);
     const secondHalf = nums.slice(8, 16).reduce((a, b) => a + b, 0);
     
-    // Chấm điểm TÀI/XỈU
     let taiScore = 0;
     let xiuScore = 0;
     
-    // Tiêu chí 1: Tổng > 2048
     sum > 2048 ? taiScore += 3 : xiuScore += 3;
-    
-    // Tiêu chí 2: Số cao vs thấp
     highCount > lowCount ? taiScore += 2 : xiuScore += 2;
-    
-    // Tiêu chí 3: Nửa sau > nửa đầu
     secondHalf > firstHalf ? taiScore += 2 : xiuScore += 2;
-    
-    // Tiêu chí 4: XOR > 127
     xorVal > 127 ? taiScore += 1 : xiuScore += 1;
-    
-    // Tiêu chí 5: Tổng bit > 64
     bitCount > 64 ? taiScore += 1 : xiuScore += 1;
-    
-    // Tiêu chí 6: Số chẵn vs lẻ
     evenCount > oddCount ? taiScore += 1 : xiuScore += 1;
     
-    // Tính phần trăm
     const total = taiScore + xiuScore;
     let taiPercent = (taiScore / total) * 100;
     let xiuPercent = (xiuScore / total) * 100;
     
-    // Đảm bảo tỷ lệ 70-90%
     let confidence = Math.max(taiPercent, xiuPercent);
     if (confidence < 70) confidence = 70 + (Math.random() * 5);
     if (confidence > 90) confidence = 85 + (Math.random() * 5);
     
     const prediction = taiScore > xiuScore ? 'TAI' : 'XIU';
     
-    // Dự đoán 3 số
     const d1 = ((nums[0] ^ nums[15]) % 6) + 1;
     const d2 = ((nums[7] ^ nums[8]) % 6) + 1;
     const d3 = ((sum % 36) % 6) + 1;
@@ -185,9 +188,6 @@ function b64send(ws, data_b64) {
     }
 }
 
-// ======================
-// HEARTBEAT
-// ======================
 function heartbeat(ws) {
     const interval = setInterval(() => {
         try {
@@ -199,9 +199,6 @@ function heartbeat(ws) {
     return interval;
 }
 
-// ======================
-// WS EVENT HANDLERS
-// ======================
 function on_open(ws) {
     MSG_ID = 4;
     console.log("✅ WS CONNECTED - Đang đăng nhập...");
@@ -235,9 +232,6 @@ function on_message(ws, message) {
     try {
         const text = message.toString();
 
-        // ---------------------
-        // GAME END
-        // ---------------------
         if (text.includes("mnmdsbgameend")) {
             const m = text.match(/\{(\d+)-(\d+)-(\d+)\}/);
             if (m) {
@@ -263,9 +257,6 @@ function on_message(ws, message) {
             }
         }
 
-        // ---------------------
-        // GAME START - LẤY MD5
-        // ---------------------
         if (text.includes("mnmdsbgamestart")) {
             const md5_match = text.match(/[a-f0-9]{32}/);
             if (md5_match) {
@@ -275,7 +266,6 @@ function on_message(ws, message) {
                 const phien_hien_tai = DATA.phien || "Đang chờ đồng bộ...";
                 console.log(`🔥 Bắt đầu Phiên [${phien_hien_tai}] - MD5: ${md5}`);
                 
-                // DỰ ĐOÁN
                 const dubao = predictFromMD5(md5);
                 console.log(`📊 DỰ ĐOÁN: ${dubao.ketqua} - Tỷ lệ: ${dubao.tile}`);
                 console.log(`🎯 Dự đoán 3 số: [${dubao.dubao_3so}] = ${dubao.tong_dubao}`);
@@ -295,9 +285,6 @@ function on_close(ws, code, msg) {
     console.log(`⚠️ Mất kết nối. Đang thử kết nối lại...`);
 }
 
-// ======================
-// START WS LOOP
-// ======================
 function start_ws_loop() {
     function connect() {
         const ws = new WebSocket(WS_URL);
@@ -324,7 +311,8 @@ if (require.main === module) {
     console.log("🚀 API Server đang khởi động...");
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => {
-        console.log(`🌐 Server chạy tại: http://localhost:${PORT}`);
+        console.log(`🌐 Server: http://localhost:${PORT}`);
         console.log(`📡 API: http://localhost:${PORT}/68gb`);
+        console.log(`🧪 Test: http://localhost:${PORT}/test/08a1dd8856b5a5386a792e380a8380c8`);
     });
-            }
+        }
