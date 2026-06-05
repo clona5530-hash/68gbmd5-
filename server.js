@@ -45,7 +45,7 @@ app.get('/setup=:phien-yes', (req, res) => {
 
 // Endpoint mặc định kiểm tra trạng thái hoạt động (Health check cho Render)
 app.get('/', (req, res) => {
-  res.send('MD5 Game Tracker Server is Running!');
+  res.send('MD5 Game Tracker Server is Running! Access /68gb for data.');
 });
 
 // Khởi chạy HTTP Server
@@ -75,8 +75,6 @@ let heartbeatInterval = null;
 
 /**
  * Tạo gói tin động chuẩn Pomelo với Sequence ID tăng dần
- * @param {WebSocket} ws 
- * @param {string} route 
  */
 function sendPomeloReq(ws, route) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -167,14 +165,14 @@ function generatePrediction(md5) {
 // ==========================================
 
 function startWsLoop() {
-  console.log("🔌 Đang khởi tạo kết nối WebSocket...");
+  console.log("🔌 Đang kết nối đến cổng WebSocket game...");
   wsClient = new WebSocket(WS_URL);
 
   wsClient.on('open', () => {
     MSG_ID = 4; // Reset bộ đếm ID gói tin
-    console.log("✅ WS CONNECTED - Đang tiến hành đăng nhập phòng game...");
+    console.log("✅ WS CONNECTED - Đang tiến hành handshake & đăng nhập...");
 
-    // Handshake & Đăng nhập phòng chơi
+    // Handshake & Đăng nhập phòng chơi giống như Python
     b64Send(wsClient, HANDSHAKE_B64);
     
     setTimeout(() => {
@@ -200,13 +198,20 @@ function startWsLoop() {
       b64Send(wsClient, HEARTBEAT);
     }, 10000);
 
-    console.log("✅ WS READY - Đã vào phòng MD5 hoàn tất!");
+    console.log("✅ WS READY - Đã gửi toàn bộ gói tin mở phòng MD5!");
   });
 
   wsClient.on('message', (message) => {
     try {
-      // Chuyển dữ liệu binary/string sang định dạng text
-      const text = Buffer.isBuffer(message) ? message.toString('utf8') : String(message);
+      let text = "";
+      if (Buffer.isBuffer(message)) {
+        // GIẢI QUYẾT LỖI PYTHON VS JS: 
+        // Loại bỏ hoàn toàn các ký tự điều khiển nhị phân không đọc được (non-printable) 
+        // để biểu thức Regex hoạt động chính xác trên chuỗi sạch.
+        text = message.toString('binary').replace(/[\x00-\x09\x0B-\x0C\x0E-\x1F\x7F-\x9F]/g, "");
+      } else {
+        text = String(message);
+      }
 
       // ----------------------------------------
       // XỬ LÝ SỰ KIỆN KẾT THÚC VÁN (GAME END)
@@ -255,7 +260,7 @@ function startWsLoop() {
           const hienTai = DATA.phien !== null ? DATA.phien : "Đang chờ đồng bộ...";
           console.log(`🔥 Bắt đầu Phiên [${hienTai}] - MD5: ${md5Value}`);
 
-          // Tạo dự đoán dựa trên MD5 phiên mới với tỉ lệ 70-90%
+          // Tạo dự đoán dựa trên MD5 phiên mới với tỉ lệ ngẫu nhiên 70-90%
           generatePrediction(md5Value);
         }
       }
