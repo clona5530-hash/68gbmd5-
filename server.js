@@ -2,46 +2,31 @@ const express = require('express');
 const cors = require('cors');
 const WebSocket = require('ws');
 
-// Khởi tạo Express App
+// Khởi tạo ứng dụng Express
 const app = express();
 app.use(cors());
 
 // Cổng chạy ứng dụng (Render tự động cấp PORT qua process.env.PORT)
 const PORT = process.env.PORT || 3000;
 
-// Bộ lưu trữ trạng thái game đồng bộ chính xác 100% theo cấu trúc Python gốc
+// Bộ lưu trữ trạng thái game đồng bộ 100% tự động
 const DATA = {
-  phien: null,
-  md5: null,          // Đây là mã MD5 của phiên hiện tại đang mở nhận cược
-  dice: [],           // Kết quả xúc xắc phiên trước
-  tong: null,         // Tổng điểm phiên trước
-  ketqua: null,       // Kết quả phiên trước ("TAI" hoặc "XIU")
+  phien: null,         // Sẽ tự động lấy mã MD5 mới nhất làm mã phiên định danh
+  md5: null,          // Mã MD5 của phiên hiện tại đang mở
+  dice: [],           // Kết quả xúc xắc phiên trước đó
+  tong: null,         // Tổng điểm phiên trước đó
+  ketqua: null,       // Kết quả phiên trước đó ("TAI" hoặc "XIU")
   duDoan: null,       // Dự đoán cho phiên MD5 HIỆN TẠI ("TAI" hoặc "XIU")
-  tiLeThanhCong: null // Tỷ lệ phần trăm dự đoán chính xác (Phân tích từ 70% - 90%)
+  tiLeThanhCong: null // Tỷ lệ dự đoán chính xác (Phân tích chuyên sâu từ 70% - 90%)
 };
 
 // ==========================================
 // API ENDPOINTS
 // ==========================================
 
-// Endpoint lấy dữ liệu hiện tại
+// Endpoint lấy dữ liệu thời gian thực
 app.get('/68gb', (req, res) => {
   res.json(DATA);
-});
-
-// Endpoint thiết lập số phiên thủ công để đồng bộ hóa (Đúng chuẩn route /setup=<phien>-yes)
-app.get('/setup=:phien-yes', (req, res) => {
-  try {
-    const phienNum = parseInt(req.params.phien, 10);
-    if (isNaN(phienNum)) {
-      return res.json({ status: "ERROR" });
-    }
-    DATA.phien = phienNum;
-    console.log(`🎯 Đã thiết lập đồng bộ phiên thủ công: ${phienNum}`);
-    return res.json({ status: "OK", phien: phienNum });
-  } catch (err) {
-    return res.json({ status: "ERROR" });
-  }
 });
 
 // Endpoint mặc định kiểm tra trạng thái hoạt động (Health check cho Render)
@@ -65,7 +50,7 @@ const HANDSHAKE_ACK = "AgAAAA==";
 const LOGIN_AUTH = "BAAATQEBAAEIAhDIARpAMWE1Y2VmM2Q1YzZiNGFjOWJiMGU5ZTUzYWIxYjYzNGI5MDNkNjU4ZjA1NTk0NDUzYWExZTZmMTI0ZTBkOTFmZUIA";
 const HEARTBEAT = "AwAAAA==";
 
-// Biến đếm ID Gói tin tăng dần để tránh bị Server chặn (Chống BAN & AFK)
+// Biến đếm ID Gói tin tăng dần để tránh bị Server chặn
 let MSG_ID = 4;
 let wsClient = null;
 let heartbeatInterval = null;
@@ -84,7 +69,7 @@ function sendPomeloReq(ws, route) {
   const routeBuffer = Buffer.from(route, 'utf-8');
   const routeLen = routeBuffer.length;
 
-  // Encode Varint cho msgId (giống hệt thuật toán dịch bit bên Python)
+  // Encode Varint cho msgId
   const msgIdBytes = [];
   let temp = msgId;
   while (true) {
@@ -98,7 +83,7 @@ function sendPomeloReq(ws, route) {
     }
   }
 
-  // Khởi tạo Payload: [type] + [msgIdBytes] + [routeLen] + [routeBuffer]
+  // Khởi tạo Payload
   const payload = Buffer.concat([
     Buffer.from([0x00]), // Type (Request)
     Buffer.from(msgIdBytes),
@@ -108,7 +93,7 @@ function sendPomeloReq(ws, route) {
 
   const length = payload.length;
 
-  // Header Pomelo: [package_type (0x04)] + [length (3 bytes)]
+  // Header Pomelo
   const header = Buffer.from([
     0x04,
     (length >> 16) & 0xff,
@@ -140,51 +125,46 @@ function b64Send(ws, base64Str) {
 
 /**
  * THUẬT TOÁN PHÂN TÍCH CHUYÊN SÂU CHUỖI MD5 HIỆN TẠI
- * Giải thuật phân tích phân bố mật độ bit/byte của chuỗi Hex MD5 
- * để tính toán lực dao động của xúc xắc, đưa ra kết quả và tỷ lệ tin cậy (70% - 90%).
+ * Giải mã mật độ phân bố hex-byte của chuỗi MD5 phiên mới nhất để tính toán lực cầu và độ tin cậy.
  */
 function analyzeAndPredictMD5(md5) {
   if (!md5 || md5.length !== 32) return;
 
-  // 1. Chuyển đổi chuỗi hex 32 ký tự thành mảng 16 byte số nguyên
+  // Chuyển đổi chuỗi hex thành mảng byte
   const bytes = [];
   for (let i = 0; i < 32; i += 2) {
     bytes.push(parseInt(md5.substr(i, 2), 16));
   }
 
-  // 2. Tính tổng trọng số vị trí (Weighted Position Sum)
-  // Các byte ở đầu và cuối chuỗi MD5 biểu thị độ lệch thuật toán băm khác nhau
+  // Tính tổng trọng số vị trí đặc trưng của thuật toán
   let weightedSum = 0;
   for (let i = 0; i < bytes.length; i++) {
     weightedSum += bytes[i] * (i + 1);
   }
 
-  // 3. Đo lường Entropy (độ nhiễu loạn phân bổ xúc xắc)
+  // Đo lường độ biến động Entropy cầu
   let diffSum = 0;
   for (let i = 0; i < bytes.length - 1; i++) {
     diffSum += Math.abs(bytes[i] - bytes[i + 1]);
   }
 
-  // 4. Đưa ra phán quyết TÀI / XỈU dựa trên tính chất Chẵn Lẻ của Tổng Trọng Số kết hợp Entropy
+  // Phán quyết kết quả dựa trên tính chẵn lẻ của tổng dao động
   const decisionMetric = Math.floor(weightedSum + diffSum);
   const prediction = (decisionMetric % 2 === 0) ? "TAI" : "XIU";
 
-  // 5. Tính toán Tỷ Lệ Tin Cậy (Confidence Rate) thực tế trong khoảng 70% -> 90%
-  // Dựa trên khoảng cách biến thiên của chỉ số Entropy so với điểm cân bằng trung bình
+  // Tính toán Tỷ Lệ Tin Cậy trong khoảng 70% -> 90%
   const avgDiff = diffSum / (bytes.length - 1);
-  // Áp dụng thuật toán co giãn tuyến tính để đưa tỷ lệ vào khoảng [70, 90]
   let confidence = Math.floor(70 + (avgDiff % 21)); 
   if (confidence < 70) confidence = 70;
   if (confidence > 90) confidence = 90;
 
-  // Cập nhật ngay vào DATA của phiên hiện tại
+  // Lưu trữ trực tiếp kết quả phân tích vào DATA
   DATA.duDoan = prediction;
   DATA.tiLeThanhCong = `${confidence}%`;
 
-  console.log(`🔮 [DỰ ĐOÁN PHIÊN HIỆN TẠI]`);
+  console.log(`🔮 [PHÂN TÍCH MD5 HIỆN TẠI]`);
   console.log(`   └─ MD5: ${md5}`);
-  console.log(`   └─ Phán quyết: ${prediction}`);
-  console.log(`   └─ Độ tin cậy thuật toán: ${confidence}%`);
+  console.log(`   └─ Dự Đoán: ${prediction} (${confidence}%)`);
 }
 
 /**
@@ -208,10 +188,10 @@ function startWsLoop() {
   wsClient = new WebSocket(WS_URL);
 
   wsClient.on('open', () => {
-    MSG_ID = 4; // Reset bộ đếm ID gói tin khi có kết nối mới
+    MSG_ID = 4;
     console.log("✅ WS CONNECTED - Đang tiến hành đăng nhập...");
 
-    // Tiến hành Handshake tuần tự giống Python gốc
+    // Handshake tuần tự giống Python
     b64Send(wsClient, HANDSHAKE_B64);
     
     setTimeout(() => {
@@ -219,7 +199,6 @@ function startWsLoop() {
       b64Send(wsClient, LOGIN_AUTH);
     }, 1000);
 
-    // Gửi lệnh vào phòng bằng bộ tạo gói tin động
     setTimeout(() => {
       sendPomeloReq(wsClient, "mnmdsb.mnmdsbhandler.entergameroom");
     }, 1500);
@@ -232,7 +211,6 @@ function startWsLoop() {
       sendPomeloReq(wsClient, "mnmdsb.mnmdsbhandler.reqpokerinfo");
     }, 2500);
 
-    // Bắt đầu nhịp tim giữ kết nối (Heartbeat) định kỳ 10 giây một lần
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     heartbeatInterval = setInterval(() => {
       b64Send(wsClient, HEARTBEAT);
@@ -245,8 +223,7 @@ function startWsLoop() {
     try {
       let text = "";
       if (Buffer.isBuffer(message)) {
-        // Sử dụng bảng mã latin1/binary để giữ nguyên cấu trúc thô của gói tin, 
-        // sau đó dọn dẹp các ký tự điều khiển phi văn bản để Regex tìm chuỗi chính xác 100%
+        // Giải mã chuỗi nhị phân sạch, loại bỏ nhiễu byte điều khiển để chạy Regex chuẩn 100%
         text = message.toString('binary').replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\xFF]/g, " ");
       } else {
         text = String(message);
@@ -267,18 +244,15 @@ function startWsLoop() {
           DATA.dice = [d1, d2, d3];
           DATA.tong = tong;
           DATA.ketqua = kq;
-          DATA.md5 = null; // Reset MD5 của phiên cũ sau khi ván kết thúc
-          DATA.duDoan = null; // Xóa dự đoán cũ để chuẩn bị cho phiên mới
+          
+          // Sau khi kết thúc, tạm thời làm trống MD5 & dự đoán cũ để đợi phiên tiếp theo
+          DATA.md5 = null;
+          DATA.duDoan = null;
           DATA.tiLeThanhCong = null;
 
-          if (DATA.phien !== null) {
-            DATA.phien += 1;
-          }
+          console.log(`🎲 Kết quả phiên cũ: ${d1}-${d2}-${d3} | Tổng: ${tong} (${kq})`);
 
-          console.log(`🎲 KQ: ${d1}-${d2}-${d3} | Tổng: ${tong} (${kq})`);
-          console.log(`➡ Phiên mới: ${DATA.phien !== null ? DATA.phien : "None"}`);
-
-          // Gọi hàm chống AFK ngay sau khi kết thúc ván để tránh bị đá văng ra sảnh chờ
+          // Gửi gói tin chống AFK để luôn giữ kết nối trong phòng chơi
           keepAliveRoom(wsClient);
         }
       }
@@ -290,12 +264,14 @@ function startWsLoop() {
         const md5Match = text.match(/[a-f0-9]{32}/i);
         if (md5Match) {
           const md5Value = md5Match[0];
-          DATA.md5 = md5Value; // Cập nhật MD5 mới nhất (được tính là MD5 của phiên HIỆN TẠI)
           
-          const phienHienTai = DATA.phien !== null ? DATA.phien : "Đang chờ đồng bộ...";
-          console.log(`🔥 Bắt đầu Phiên [${phienHienTai}] - MD5: ${md5Value}`);
+          // Cập nhật thông tin phiên hiện tại bằng chính mã MD5 mới nhất
+          DATA.md5 = md5Value;
+          DATA.phien = md5Value; // Đặt MD5 mới nhất thay thế hoàn toàn cho số phiên
 
-          // CHẠY THUẬT TOÁN DỰ ĐOÁN CHUYÊN SÂU TRÊN MD5 HIỆN TẠI NGAY LẬP TỨC
+          console.log(`🔥 PHIÊN HIỆN TẠI (MD5): ${md5Value}`);
+
+          // Kích hoạt phân tích và dự đoán ngay lập tức
           analyzeAndPredictMD5(md5Value);
         }
       }
@@ -306,7 +282,7 @@ function startWsLoop() {
   });
 
   wsClient.on('error', (err) => {
-    // Không in log để giữ màn hình console sạch sẽ
+    // Không ghi log lỗi kết nối làm bẩn terminal
   });
 
   wsClient.on('close', () => {
@@ -315,10 +291,9 @@ function startWsLoop() {
       clearInterval(heartbeatInterval);
       heartbeatInterval = null;
     }
-    // Kết nối lại sau 3 giây
     setTimeout(startWsLoop, 3000);
   });
 }
 
-// Khởi tạo vòng lặp kết nối
+// Khởi tạo vòng lặp kết nối WebSocket
 startWsLoop();
