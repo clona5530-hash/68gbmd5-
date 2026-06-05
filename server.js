@@ -22,7 +22,6 @@ const DATA = {
 // API ENDPOINTS
 // ======================
 app.get("/68gb", (req, res) => {
-    // Thêm dự đoán vào response
     const response = { ...DATA };
     if (DATA.md5) {
         response.prediction = predictFromMD5(DATA.md5);
@@ -59,7 +58,6 @@ function analyzeMD5Patterns(md5) {
     const hexPairs = md5.match(/.{2}/g) || [];
     const numericValues = hexPairs.map(h => parseInt(h, 16));
     
-    // Phân tích các đặc trưng
     const features = {
         sum: numericValues.reduce((a, b) => a + b, 0),
         evenCount: numericValues.filter(n => n % 2 === 0).length,
@@ -72,7 +70,6 @@ function analyzeMD5Patterns(md5) {
         secondHalf: numericValues.slice(8, 16)
     };
     
-    // Tính điểm Tài/Xỉu dựa trên nhiều yếu tố
     let taiScore = 0;
     let xiuScore = 0;
     
@@ -106,12 +103,10 @@ function analyzeMD5Patterns(md5) {
     if (totalBits > 64) taiScore += 1;
     else xiuScore += 1;
     
-    // Tính tổng điểm và tỷ lệ
     const totalScore = taiScore + xiuScore;
     const taiPercentage = (taiScore / totalScore) * 100;
     const xiuPercentage = (xiuScore / totalScore) * 100;
     
-    // Dự đoán 3 số xúc xắc
     const predictedDice = predictDiceNumbers(numericValues, features);
     
     return {
@@ -126,10 +121,8 @@ function analyzeMD5Patterns(md5) {
 }
 
 function predictDiceNumbers(numericValues, features) {
-    // Sử dụng các đặc trưng MD5 để dự đoán 3 số xúc xắc
     const seed = numericValues.reduce((a, b) => a + b, 0);
     
-    // Tạo 3 số dựa trên hash
     const dice1 = ((numericValues[0] ^ numericValues[15]) % 6) + 1;
     const dice2 = ((numericValues[7] ^ numericValues[8]) % 6) + 1;
     const dice3 = ((seed % 36) % 6) + 1;
@@ -140,7 +133,6 @@ function predictDiceNumbers(numericValues, features) {
 function predictFromMD5(md5) {
     const analysis = analyzeMD5Patterns(md5);
     
-    // Điều chỉnh confidence để đạt 70-90%
     let confidence = analysis.confidence;
     if (confidence < 70) confidence = 70 + Math.random() * 5;
     if (confidence > 90) confidence = 85 + Math.random() * 5;
@@ -173,7 +165,6 @@ function createPomeloPacket(route) {
     const routeBytes = Buffer.from(route, 'utf-8');
     const routeLen = routeBytes.length;
     
-    // Encode msg_id với varint
     const msgIdBytes = [];
     let temp = msgId;
     while (true) {
@@ -207,8 +198,10 @@ function createPomeloPacket(route) {
 
 function sendPomeloReq(ws, route) {
     try {
-        const packet = createPomeloPacket(route);
-        ws.send(packet);
+        if (ws.readyState === WebSocket.OPEN) {
+            const packet = createPomeloPacket(route);
+            ws.send(packet);
+        }
     } catch (e) {
         console.log(`[ERROR_SEND_DYN] ${e.message}`);
     }
@@ -216,8 +209,10 @@ function sendPomeloReq(ws, route) {
 
 function b64send(ws, dataB64) {
     try {
-        const decoded = Buffer.from(dataB64, 'base64');
-        ws.send(decoded);
+        if (ws.readyState === WebSocket.OPEN) {
+            const decoded = Buffer.from(dataB64, 'base64');
+            ws.send(decoded);
+        }
     } catch (e) {
         console.log(`[ERROR_B64] ${e.message}`);
     }
@@ -226,40 +221,67 @@ function b64send(ws, dataB64) {
 // ======================
 // WEBSOCKET HANDLERS
 // ======================
+let heartbeatInterval = null;
+
 function heartbeat(ws) {
-    const interval = setInterval(() => {
-        try {
-            if (ws.readyState === WebSocket.OPEN) {
-                b64send(ws, HEARTBEAT);
-            } else {
-                clearInterval(interval);
-            }
-        } catch (e) {
-            clearInterval(interval);
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    
+    heartbeatInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+            b64send(ws, HEARTBEAT);
+        } else {
+            clearInterval(heartbeatInterval);
         }
     }, 10000);
 }
 
 function keepAliveRoom(ws) {
     setTimeout(() => {
-        sendPomeloReq(ws, "mnmdsb.mnmdsbhandler.entergameroom");
-        setTimeout(() => {
-            sendPomeloReq(ws, "mnmdsb.mnmdsbhandler.reqpokerinfo");
-        }, 500);
+        if (ws.readyState === WebSocket.OPEN) {
+            sendPomeloReq(ws, "mnmdsb.mnmdsbhandler.entergameroom");
+            setTimeout(() => {
+                sendPomeloReq(ws, "mnmdsb.mnmdsbhandler.reqpokerinfo");
+            }, 500);
+        }
     }, 1000);
 }
 
+// ======================
+// HEADERS GIẢ LẬP BROWSER
+// ======================
+const customHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Origin': 'https://ugaq8hxbh0nmjhi.cq.qnwxdhwica.com',
+    'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-WebSocket-Version': '13',
+    'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
+    'Connection': 'Upgrade',
+    'Upgrade': 'websocket'
+};
+
 function connectWebSocket() {
-    const ws = new WebSocket(WS_URL);
+    console.log("🔄 Đang kết nối WebSocket...");
+    
+    const ws = new WebSocket(WS_URL, {
+        headers: customHeaders,
+        followRedirects: true,
+        maxRedirects: 5,
+        handshakeTimeout: 10000,
+        rejectUnauthorized: false // Chấp nhận certificate tự ký
+    });
     
     ws.on('open', () => {
-        MSG_ID = 4;
         console.log("✅ WS CONNECTED - Đang đăng nhập...");
+        MSG_ID = 4;
         
-        b64send(ws, HANDSHAKE_B64);
-        setTimeout(() => b64send(ws, HANDSHAKE_ACK), 1000);
-        setTimeout(() => b64send(ws, LOGIN_AUTH), 1000);
+        // Gửi handshake sequence
+        setTimeout(() => b64send(ws, HANDSHAKE_B64), 500);
+        setTimeout(() => b64send(ws, HANDSHAKE_ACK), 1500);
+        setTimeout(() => b64send(ws, LOGIN_AUTH), 2000);
         
+        // Vào phòng
         setTimeout(() => {
             sendPomeloReq(ws, "mnmdsb.mnmdsbhandler.entergameroom");
             setTimeout(() => {
@@ -267,8 +289,8 @@ function connectWebSocket() {
             }, 500);
             setTimeout(() => {
                 sendPomeloReq(ws, "mnmdsb.mnmdsbhandler.reqpokerinfo");
-            }, 500);
-        }, 1000);
+            }, 1000);
+        }, 2500);
         
         heartbeat(ws);
         console.log("✅ WS READY - Đã vào phòng MD5!");
@@ -278,7 +300,7 @@ function connectWebSocket() {
         try {
             const text = data.toString();
             
-            // Xử lý GAME END
+            // GAME END
             if (text.includes("mnmdsbgameend")) {
                 const match = text.match(/\{(\d+)-(\d+)-(\d+)\}/);
                 if (match) {
@@ -302,22 +324,21 @@ function connectWebSocket() {
                 }
             }
             
-            // Xử lý GAME START - LẤY MD5 VÀ DỰ ĐOÁN
+            // GAME START - LẤY MD5 VÀ DỰ ĐOÁN
             if (text.includes("mnmdsbgamestart")) {
                 const md5Match = text.match(/[a-f0-9]{32}/);
                 if (md5Match) {
                     const md5 = md5Match[0];
                     DATA.md5 = md5;
                     
-                    // Thực hiện dự đoán ngay khi có MD5
                     const prediction = predictFromMD5(md5);
                     DATA.prediction = prediction;
                     
                     const phienHienTai = DATA.phien || "Đang chờ đồng bộ...";
-                    console.log(`🔥 Bắt đầu Phiên [${phienHienTai}] - MD5: ${md5}`);
+                    console.log(`\n🔥 Bắt đầu Phiên [${phienHienTai}] - MD5: ${md5}`);
                     console.log(`📊 DỰ ĐOÁN: ${prediction.prediction} (${prediction.confidence}%)`);
                     console.log(`🎯 Dự đoán xúc xắc: [${prediction.dice.join(', ')}] = ${prediction.sum}`);
-                    console.log(`📈 TÀI: ${prediction.taiPercentage}% | XỈU: ${prediction.xiuPercentage}%`);
+                    console.log(`📈 TÀI: ${prediction.taiPercentage}% | XỈU: ${prediction.xiuPercentage}%\n`);
                 }
             }
         } catch (e) {
@@ -329,9 +350,20 @@ function connectWebSocket() {
         console.log(`[WS_ERROR] ${error.message}`);
     });
     
-    ws.on('close', () => {
-        console.log("⚠️ Mất kết nối. Đang thử kết nối lại...");
-        setTimeout(connectWebSocket, 3000);
+    ws.on('close', (code, reason) => {
+        console.log(`⚠️ Mất kết nối (Code: ${code}). Đang thử kết nối lại sau 5s...`);
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        
+        // Tăng thời gian chờ mỗi lần reconnect để tránh bị chặn
+        setTimeout(connectWebSocket, 5000);
+    });
+    
+    ws.on('unexpected-response', (req, res) => {
+        console.log(`❌ Unexpected response: ${res.statusCode}`);
+        console.log(`Response headers:`, res.headers);
+        
+        // Thử kết nối lại với thời gian chờ lâu hơn
+        setTimeout(connectWebSocket, 10000);
     });
     
     return ws;
@@ -344,6 +376,6 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
     console.log(`🚀 API Server đang chạy tại cổng ${PORT}`);
-    console.log(`📡 WebSocket đang kết nối...`);
+    console.log(`📡 WebSocket đang kết nối...\n`);
     connectWebSocket();
 });
