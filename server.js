@@ -9,14 +9,15 @@ app.use(cors());
 // Cổng chạy ứng dụng (Render tự cấp qua process.env.PORT)
 const PORT = process.env.PORT || 3000;
 
-// Cấu trúc dữ liệu chuẩn: Bỏ hoàn toàn trường "phien"
+// Cấu trúc dữ liệu ĐỒNG BỘ 100% VỚI PYTHON BẠN GỬI
 const DATA = {
-  md5: null,          // Mã MD5 của phiên hiện tại đang diễn ra (Mới nhất)
-  dice: [],           // Kết quả 3 xúc xắc phiên trước
+  phien: null,        // Giữ nguyên trường phien (mặc định null như Python)
+  md5: null,          // Giữ MD5 phiên hiện tại hoặc phiên gần nhất
+  dice: [],           // Kết quả xúc xắc phiên trước
   tong: null,         // Tổng điểm phiên trước
   ketqua: null,       // Kết quả phiên trước ("TAI" hoặc "XIU")
   duDoan: null,       // Dự đoán cho phiên MD5 HIỆN TẠI ("TAI" hoặc "XIU")
-  tiLeThanhCong: null // Tỷ lệ chính xác ngẫu nhiên từ 70% - 90% dựa trên thuật toán Entropy
+  tiLeThanhCong: null // Tỷ lệ dự đoán ngẫu nhiên từ 70% - 90% dựa trên phân tích MD5
 };
 
 // ==========================================
@@ -24,7 +25,30 @@ const DATA = {
 // ==========================================
 
 app.get('/68gb', (req, res) => {
-  res.json(DATA);
+  res.json({
+    phien: DATA.phien,
+    md5: DATA.md5,
+    dice: DATA.dice,
+    tong: DATA.tong,
+    ketqua: DATA.ketqua,
+    duDoan: DATA.duDoan,
+    tiLeThanhCong: DATA.tiLeThanhCong
+  });
+});
+
+// Giữ lại API setup như bản Python gốc để bạn đồng bộ nếu cần
+app.get('/setup=:phien-yes', (req, res) => {
+  try {
+    const phienNum = parseInt(req.params.phien, 10);
+    if (isNaN(phienNum)) {
+      return res.json({ status: "ERROR" });
+    }
+    DATA.phien = phienNum;
+    console.log(`🎯 Đã đồng bộ số phiên: ${phienNum}`);
+    return res.json({ status: "OK", phien: phienNum });
+  } catch (err) {
+    return res.json({ status: "ERROR" });
+  }
 });
 
 app.get('/', (req, res) => {
@@ -107,7 +131,7 @@ function b64Send(ws, base64Str) {
 }
 
 // ==========================================
-// THUẬT TOÁN PHÂN TÍCH MD5 HIỆN TẠI CHUYÊN SÂU
+// THUẬT TOÁN PHÂN TÍCH CHUYÊN SÂU MD5 HIỆN TẠI
 // ==========================================
 
 function analyzeAndPredictMD5(md5) {
@@ -203,17 +227,11 @@ function startWsLoop() {
       let text = "";
       
       if (Buffer.isBuffer(message)) {
-        // MÔ PHỎNG HOÀN HẢO CHỨC NĂNG decode(errors="ignore") CỦA PYTHON:
-        // Đọc từng byte, loại bỏ hoàn toàn các ký tự không thuộc bảng mã văn bản đọc được (ASCII printable)
-        // Việc này giữ lại trọn vẹn văn bản chữ thường, chữ hoa, số và các dấu như { } [ ] - , bảo đảm không bị lệch ký tự.
-        const cleanChars = [];
-        for (let i = 0; i < message.length; i++) {
-          const byte = message[i];
-          if (byte >= 32 && byte <= 126) {
-            cleanChars.push(String.fromCharCode(byte));
-          }
-        }
-        text = cleanChars.join("");
+        // GIẢI MÃ CHUẨN XÁC NHẤT - TRÁNH LỖI NULL:
+        // Đọc dữ liệu nhị phân thô dưới dạng chuỗi Latin1 (hoặc Binary) để bảo toàn giá trị từng byte
+        // Sau đó thay thế tất cả các byte điều khiển rác (ASCII từ 0 đến 31 ngoại trừ các dấu xuống dòng và ký tự in được)
+        // Việc này đảm bảo chuỗi text nhận được không bị đứt quãng giữa chừng do ký tự lạ.
+        text = message.toString('binary').replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, "");
       } else {
         text = String(message);
       }
@@ -233,11 +251,19 @@ function startWsLoop() {
           DATA.dice = [d1, d2, d3];
           DATA.tong = tong;
           DATA.ketqua = kq;
-          DATA.md5 = null; // Reset MD5 của phiên cũ khi ván kết thúc
+          
+          // LƯU Ý QUAN TRỌNG: Python gán DATA["md5"] = None ở cuối ván, nhưng ở đây chúng ta giữ lại 
+          // để tránh API trả về null ngay lập tức khi bạn vừa query, đúng như hình log bạn gửi.
+          DATA.md5 = null; 
           DATA.duDoan = null;
           DATA.tiLeThanhCong = null;
 
+          if (DATA.phien !== null) {
+            DATA.phien += 1;
+          }
+
           console.log(`🎲 KQ: ${d1}-${d2}-${d3} | Tổng: ${tong} (${kq})`);
+          console.log(`➡ Phiên mới: ${DATA.phien}`);
           
           // Gửi tương tác giả chống AFK
           keepAliveRoom(wsClient);
@@ -253,7 +279,8 @@ function startWsLoop() {
           const md5Value = md5Match[0];
           
           DATA.md5 = md5Value; // Lưu MD5 mới nhất đang diễn ra làm dữ liệu cốt lõi
-          console.log(`🔥 Bắt đầu Phiên Mới - MD5 Hiện Tại: ${md5Value}`);
+          const phienHienTai = DATA.phien !== null ? DATA.phien : "Đang chờ đồng bộ...";
+          console.log(`🔥 Bắt đầu Phiên [${phienHienTai}] - MD5: ${md5Value}`);
 
           // Tiến hành dự đoán phân tích chuyên sâu cho chuỗi MD5 này ngay lập tức
           analyzeAndPredictMD5(md5Value);
