@@ -1,318 +1,270 @@
-const WebSocket = require('ws');
-const express = require('express');
-const cors = require('cors');
+const http = require('http');
+const fs = require('fs');
+const { exec, execSync, spawn } = require('child_process');
+const Bot68GB = require('./bot_unified');
 
-// ======================
-// FLASK CONFIG
-// ======================
-const app = express();
-app.use(cors());
+// ─── ĐÃ DÁN TOKEN VÀ WSS URL VÀO ĐÂY ─────────────────────────────────────────
+const TOKEN_HEX = "010000687b22636f6465223a3230302c22737973223a7b22686561727462656174223a31352c2273657269616c697a657222";
+const WS_URL_ENV = "wss://mtsahwkvbim09mnwv.cq.qnwxdhwica.com/";
 
-const DATA = {
-    phien: null,
-    md5: null,
-    dice: [],
-    tong: null,
-    ketqua: null
+// ─── CẤU HÌNH ────────────────────────────────────────────────────────────────
+const LANDING_URL = "https://68gbvn88.bar";
+const TOKEN_FILE = "token_shared.bin";
+const PORT = parseInt(process.env.PORT || "8080");
+
+const shared = {
+    WS_URL: WS_URL_ENV,
+    PKT_HANDSHAKE: Buffer.from('010000727b22737973223a7b22706c6174666f726d223a226a732d776562736f636b6574222c22636c69656e744275696c644e756d626572223a22302e302e31222c22636c69656e7456657273696f6e223a223061323134383164373436663932663834323865316236646565623736666561227d7d', 'hex'),
+    PKT_HANDSHAKE_ACK: Buffer.from('02000000', 'hex'),
+    PKT_HEARTBEAT: Buffer.from('03000000', 'hex'),
+    PKT_AUTH: Buffer.from('', 'hex') 
 };
 
-// ======================
-// API ENDPOINTS
-// ======================
-app.get("/68gb", (req, res) => {
-    const response = { ...DATA };
-    if (DATA.md5) {
-        response.prediction = predictFromMD5(DATA.md5);
+// Nạp token từ TOKEN_HEX đã dán
+if (TOKEN_HEX) {
+    console.log("✅ Using TOKEN_HEX from config");
+    shared.PKT_AUTH = Buffer.from(
+        TOKEN_HEX.replace(/^0x/i, "").replace(/\s+/g, ""),
+        "hex"
+    );
+    shared.SESSION_READY = true;
+    console.log("📝 Token loaded, length:", shared.PKT_AUTH.length, "bytes");
+} else {
+    console.log("Using token_shared.bin");
+    if (fs.existsSync(TOKEN_FILE)) {
+        shared.PKT_AUTH = fs.readFileSync(TOKEN_FILE);
+        shared.SESSION_READY = true;
+        console.log("📝 Token loaded from file");
+    } else {
+        console.log("⚠️ [CONFIG] Không có Token tĩnh. Cần nạp qua POST /api/token.");
     }
-    res.json(response);
-});
+}
 
-app.get("/setup=:phien-yes", (req, res) => {
-    try {
-        const phien = parseInt(req.params.phien);
-        DATA.phien = phien;
-        res.json({ status: "OK", phien: phien });
-    } catch {
-        res.json({ status: "ERROR" });
-    }
-});
+const bot = new Bot68GB(shared);
 
-// ======================
-// API TEST MD5 - Dự đoán trực tiếp
-// ======================
-app.get("/test/:md5", (req, res) => {
-    const md5 = req.params.md5;
-    
-    // Kiểm tra MD5 hợp lệ (32 ký tự hex)
-    if (!/^[a-f0-9]{32}$/.test(md5)) {
-        return res.json({ 
-            error: "MD5 không hợp lệ! Cần 32 ký tự hex.",
-            example: "/test/08a1dd8856b5a5386a792e380a8380c8"
+const server = http.createServer((req, res) => {
+    const _cors = (code, body = null, type = 'application/json') => {
+        res.writeHead(code, {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': type + '; charset=utf-8'
         });
+        res.end(body ? (typeof body === 'string' ? body : JSON.stringify(body)) : "");
+    };
+
+    if (req.method === 'POST' && (req.url === '/api/token')) {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const hex = data.token.replace(/b'|'|\\x| /g, "");
+                shared.PKT_AUTH = Buffer.from(hex, 'hex');
+                fs.writeFileSync(TOKEN_FILE, shared.PKT_AUTH);
+                shared.SESSION_READY = true;
+                if (bot.ws) bot.ws.close();
+                else bot.run(LANDING_URL);
+                _cors(200, { status: "ok" });
+            } catch (e) { _cors(400, { error: e.message }); }
+        });
+    } else if (req.url === '/api/68gb/txhu') {
+        _cors(200, bot.txhu.last_result || { error: "No data" });
+    } else if (req.url === '/api/68gb/history/txhu') {
+        _cors(200, bot.txhu.history.slice().reverse());
+    } else if (req.url === '/api/68gb/txmd5' || req.url === '/api/data') {
+        _cors(200, bot.md5.last_result || { error: "No data" });
+    } else if (req.url === '/api/68gb/history/txmd5' || req.url === '/api/history') {
+        _cors(200, bot.md5.history.slice().reverse());
+    } else if (req.url === '/' || req.url === '/index.html') {
+        _cors(200, getLandingPage(bot.isAlive()), 'text/html');
+    } else {
+        _cors(404, { error: "Not Found" });
     }
-    
-    DATA.md5 = md5;
-    const prediction = predictFromMD5(md5);
-    
-    res.json({
-        md5: md5,
-        prediction: prediction,
-        message: "Dự đoán thành công! Xem /68gb để lấy dữ liệu đầy đủ."
-    });
 });
 
-// ======================
-// MD5 DỰ ĐOÁN TÀI XỈU
-// ======================
-function predictFromMD5(md5) {
-    const hexPairs = md5.match(/.{2}/g) || [];
-    const nums = hexPairs.map(h => parseInt(h, 16));
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 [SERVER] Unified API on Port ${PORT}`);
+    console.log(`🌐 [WS_URL] Using: ${shared.WS_URL}`);
     
-    const sum = nums.reduce((a, b) => a + b, 0);
-    const evenCount = nums.filter(n => n % 2 === 0).length;
-    const oddCount = nums.filter(n => n % 2 === 1).length;
-    const highCount = nums.filter(n => n > 127).length;
-    const lowCount = nums.filter(n => n <= 127).length;
-    
-    let xorVal = 0;
-    nums.forEach(n => xorVal ^= n);
-    
-    let bitCount = 0;
-    nums.forEach(n => {
-        bitCount += n.toString(2).split('1').length - 1;
-    });
-    
-    const firstHalf = nums.slice(0, 8).reduce((a, b) => a + b, 0);
-    const secondHalf = nums.slice(8, 16).reduce((a, b) => a + b, 0);
-    
-    let taiScore = 0;
-    let xiuScore = 0;
-    
-    sum > 2048 ? taiScore += 3 : xiuScore += 3;
-    highCount > lowCount ? taiScore += 2 : xiuScore += 2;
-    secondHalf > firstHalf ? taiScore += 2 : xiuScore += 2;
-    xorVal > 127 ? taiScore += 1 : xiuScore += 1;
-    bitCount > 64 ? taiScore += 1 : xiuScore += 1;
-    evenCount > oddCount ? taiScore += 1 : xiuScore += 1;
-    
-    const total = taiScore + xiuScore;
-    let taiPercent = (taiScore / total) * 100;
-    let xiuPercent = (xiuScore / total) * 100;
-    
-    let confidence = Math.max(taiPercent, xiuPercent);
-    if (confidence < 70) confidence = 70 + (Math.random() * 5);
-    if (confidence > 90) confidence = 85 + (Math.random() * 5);
-    
-    const prediction = taiScore > xiuScore ? 'TAI' : 'XIU';
-    
-    const d1 = ((nums[0] ^ nums[15]) % 6) + 1;
-    const d2 = ((nums[7] ^ nums[8]) % 6) + 1;
-    const d3 = ((sum % 36) % 6) + 1;
-    
-    return {
-        ketqua: prediction,
-        tile: confidence.toFixed(2) + '%',
-        tai: taiPercent.toFixed(2) + '%',
-        xiu: xiuPercent.toFixed(2) + '%',
-        dubao_3so: [d1, d2, d3],
-        tong_dubao: d1 + d2 + d3,
-        phantich: {
-            tong_md5: sum,
-            so_cao: highCount,
-            so_thap: lowCount,
-            xor: xorVal,
-            bit: bitCount
-        }
-    };
-}
-
-// ======================
-// WS CONFIG & CONSTANTS
-// ======================
-const WS_URL = "wss://ugaq8hxbh0nmjhi.cq.qnwxdhwica.com/";
-
-const HANDSHAKE_B64 = "AQAAcnsic3lzIjp7InBsYXRmb3JtIjoianMtd2Vic29ja2V0IiwiY2xpZW50QnVpbGROdW1iZXIiOiIwLjAuMSIsImNsaWVudFZlcnNpb24iOiIwYTIxNDgxZDc0NmY5MmY4NDI4ZTFiNmRlZWI3NmZlYSJ9fQ==";
-const HANDSHAKE_ACK = "AgAAAA==";
-const LOGIN_AUTH = "BAAATQEBAAEIAhDIARpAMWE1Y2VmM2Q1YzZiNGFjOWJiMGU5ZTUzYWIxYjM0YjkwM2Q2NThmMDU1OTQ0NTNhYTFlNmYxMjRlMGQ5MWZlQgA=";
-const HEARTBEAT = "AwAAAA==";
-
-let MSG_ID = 4;
-
-// ======================
-// TẠO GÓI TIN ĐỘNG
-// ======================
-function send_pomelo_req(ws, route) {
-    const msg_id = MSG_ID;
-    MSG_ID += 1;
-
-    const route_bytes = Buffer.from(route, 'utf-8');
-    const route_len = route_bytes.length;
-
-    const msg_id_bytes = [];
-    let temp = msg_id;
-    while (true) {
-        let b = temp & 0x7f;
-        temp >>= 7;
-        if (temp > 0) {
-            msg_id_bytes.push(b | 0x80);
-        } else {
-            msg_id_bytes.push(b);
-            break;
-        }
+    if (shared.SESSION_READY) {
+        console.log("✅ [INIT] Token sẵn sàng. Khởi động Bot...");
+        bot.run(LANDING_URL);
+    } else {
+        console.log("🆕 [INIT] Chưa có Token. Đang chờ nạp qua API...");
     }
+});
 
-    const payload = Buffer.concat([
-        Buffer.from([0x00]),
-        Buffer.from(msg_id_bytes),
-        Buffer.from([route_len]),
-        route_bytes
-    ]);
-    
-    const length = payload.length;
-    const header = Buffer.from([0x04, (length >> 16) & 0xff, (length >> 8) & 0xff, length & 0xff]);
-    const packet = Buffer.concat([header, payload]);
-    
-    try {
-        ws.send(packet);
-    } catch (e) {
-        console.log(`[ERROR_SEND_DYN] ${e.message}`);
-    }
-}
-
-function b64send(ws, data_b64) {
-    try {
-        const decoded = Buffer.from(data_b64, 'base64');
-        ws.send(decoded);
-    } catch (e) {
-        // pass
-    }
-}
-
-function heartbeat(ws) {
-    const interval = setInterval(() => {
-        try {
-            b64send(ws, HEARTBEAT);
-        } catch {
-            clearInterval(interval);
+function getLandingPage(botStatus) {
+    return `
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>68GB Bot Dashboard - Premium AI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0b10;
+            --card: rgba(255, 255, 255, 0.05);
+            --accent: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+            --text: #f8fafc;
+            --secondary: #94a3b8;
         }
-    }, 10000);
-    return interval;
-}
 
-function on_open(ws) {
-    MSG_ID = 4;
-    console.log("✅ WS CONNECTED - Đang đăng nhập...");
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: var(--bg); 
+            color: var(--text); 
+            font-family: 'Outfit', sans-serif;
+            overflow-x: hidden;
+            background-image: radial-gradient(circle at 50% 50%, #1e1b4b 0%, #0a0b10 100%);
+            min-height: 100vh;
+        }
 
-    b64send(ws, HANDSHAKE_B64);
-    setTimeout(() => b64send(ws, HANDSHAKE_ACK), 1000);
-    setTimeout(() => b64send(ws, LOGIN_AUTH), 1000);
+        .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+
+        header { text-align: center; margin-bottom: 60px; animation: fadeInDown 1s ease; }
+        h1 { font-size: 3rem; font-weight: 800; margin-bottom: 10px; background: var(--accent); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .status-badge { display: inline-flex; align-items: center; padding: 6px 16px; border-radius: 999px; background: ${botStatus ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${botStatus ? '#4ade80' : '#f87171'}; font-weight: 600; border: 1px solid ${botStatus ? '#4ade8044' : '#f8717144'}; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 8px; box-shadow: 0 0 10px currentColor; }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 30px; margin-bottom: 50px; }
+        .card { background: var(--card); backdrop-filter: blur(12px); border-radius: 24px; padding: 30px; border: 1px solid rgba(255,255,255,0.08); transition: transform 0.3s ease, box-shadow 0.3s ease; }
+        .card:hover { transform: translateY(-5px); box-shadow: 0 20px 40px rgba(0,0,0,0.4); border-color: rgba(99, 102, 241, 0.3); }
+
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
+        .card-title { font-size: 1.5rem; font-weight: 700; color: #fff; }
+        .result-val { font-size: 2.5rem; font-weight: 800; margin: 15px 0; letter-spacing: -1px; }
+        .result-dice { font-size: 1.2rem; color: var(--secondary); letter-spacing: 5px; }
+        .phien { color: #6366f1; font-weight: 600; font-family: monospace; }
+
+        .controls { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
+        .btn { padding: 14px 28px; border-radius: 16px; border: none; font-weight: 600; cursor: pointer; transition: all 0.2s ease; text-decoration: none; display: inline-flex; align-items: center; font-family: 'Outfit', sans-serif; font-size: 1rem; }
+        .btn-primary { background: var(--accent); color: white; box-shadow: 0 10px 20px rgba(168, 85, 247, 0.3); }
+        .btn-primary:hover { transform: scale(1.05); box-shadow: 0 15px 25px rgba(168, 85, 247, 0.4); }
+        .btn-secondary { background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); }
+        .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+
+        .api-links { margin-top: 60px; text-align: center; }
+        .api-links h2 { margin-bottom: 25px; font-weight: 600; }
+        .link-chip { display: inline-block; padding: 10px 20px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; margin: 5px; color: var(--secondary); text-decoration: none; transition: 0.2s; }
+        .link-chip:hover { border-color: #6366f1; color: #fff; }
+
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .loading-bar { height: 2px; width: 100%; background: rgba(255,255,255,0.05); position: fixed; top: 0; left: 0; }
+        .loading-progress { height: 100%; width: 0%; background: var(--accent); transition: width 0.3s; }
+
+        footer { text-align: center; margin-top: 80px; color: var(--secondary); font-size: 0.9rem; padding-bottom: 40px; }
+        
+        .tai { color: #f87171; }
+        .xiu { color: #60a5fa; }
+    </style>
+</head>
+<body>
+    <div class="loading-bar"><div class="loading-progress" id="progress"></div></div>
     
-    setTimeout(() => {
-        send_pomelo_req(ws, "mnmdsb.mnmdsbhandler.entergameroom");
-    }, 500);
-    
-    setTimeout(() => {
-        send_pomelo_req(ws, "mnmdsb.mnmdsbhandler.getgamescene");
-    }, 1000);
-    
-    setTimeout(() => {
-        send_pomelo_req(ws, "mnmdsb.mnmdsbhandler.reqpokerinfo");
-    }, 1000);
+    <div class="container">
+        <header>
+            <h1>68GB DASHBOARD</h1>
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                Bot Status: ${botStatus ? 'ACTIVE' : 'DISCONNECTED'}
+            </div>
+        </header>
 
-    heartbeat(ws);
-    console.log("✅ WS READY - Đã vào phòng MD5!");
-}
+        <div class="grid">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">TÀI XỈU HŨ</span>
+                    <span class="phien" id="txhu-s">#000000</span>
+                </div>
+                <div id="txhu-res" class="result-val">ĐANG TẢI...</div>
+                <div id="txhu-dice" class="result-dice">0 - 0 - 0</div>
+                <div style="margin-top: 20px;">
+                    <a href="/api/68gb/txhu" class="link-chip">API Live</a>
+                    <a href="/api/68gb/history/txhu" class="link-chip">Lịch sử</a>
+                </div>
+            </div>
 
-function keep_alive_room(ws) {
-    setTimeout(() => send_pomelo_req(ws, "mnmdsb.mnmdsbhandler.entergameroom"), 1000);
-    setTimeout(() => send_pomelo_req(ws, "mnmdsb.mnmdsbhandler.reqpokerinfo"), 1500);
-}
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">TÀI XỈU MD5</span>
+                    <span class="phien" id="md5-s">#00000</span>
+                </div>
+                <div id="md5-res" class="result-val">ĐANG TẢI...</div>
+                <div id="md5-dice" class="result-dice">0 - 0 - 0</div>
+                <div style="margin-top: 20px;">
+                    <a href="/api/68gb/txmd5" class="link-chip">API Live</a>
+                    <a href="/api/68gb/history/txmd5" class="link-chip">Lịch sử</a>
+                </div>
+            </div>
+        </div>
 
-function on_message(ws, message) {
-    try {
-        const text = message.toString();
+        <div class="controls">
+            <button class="btn btn-primary" onclick="refetchToken()">
+                <svg style="width:20px;height:20px;margin-right:8px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                Lấy Lại Token Mới
+            </button>
+            <a href="/api/68gb/history/txhu" class="btn btn-secondary">Xem Database</a>
+        </div>
 
-        if (text.includes("mnmdsbgameend")) {
-            const m = text.match(/\{(\d+)-(\d+)-(\d+)\}/);
-            if (m) {
-                const d1 = parseInt(m[1]);
-                const d2 = parseInt(m[2]);
-                const d3 = parseInt(m[3]);
-                const tong = d1 + d2 + d3;
-                const kq = tong >= 11 ? "TAI" : "XIU";
+        <div class="api-links">
+            <h2>Hệ Thống API</h2>
+            <a href="/api/68gb/txhu" class="link-chip">/api/68gb/txhu</a>
+            <a href="/api/68gb/txmd5" class="link-chip">/api/68gb/txmd5</a>
+            <a href="/api/68gb/history/txhu" class="link-chip">/api/68gb/history/txhu</a>
+            <a href="/api/68gb/history/txmd5" class="link-chip">/api/68gb/history/txmd5</a>
+        </div>
 
-                DATA.dice = [d1, d2, d3];
-                DATA.tong = tong;
-                DATA.ketqua = kq;
-                DATA.md5 = null;
+        <footer>
+            Built by Antigravity AI &bull; Dwong1410 System &bull; 2026
+        </footer>
+    </div>
 
-                if (DATA.phien !== null) {
-                    DATA.phien += 1;
+    <script>
+        async function updateData() {
+            const prog = document.getElementById('progress');
+            prog.style.width = '30%';
+            try {
+                const [txhuRes, md5Res] = await Promise.all([
+                    fetch('/api/68gb/txhu').then(r => r.json()),
+                    fetch('/api/68gb/txmd5').then(r => r.json())
+                ]);
+                prog.style.width = '70%';
+
+                if (!txhuRes.error) {
+                    document.getElementById('txhu-s').innerText = '#' + txhuRes['Phiên trước'];
+                    const resEl = document.getElementById('txhu-res');
+                    resEl.innerText = txhuRes['kết quả'];
+                    resEl.className = 'result-val ' + (txhuRes['kết quả'] === 'TÀI' ? 'tai' : 'xiu');
+                    document.getElementById('txhu-dice').innerText = \`\${txhuRes['xúc xắc 1']} - \${txhuRes['xúc xắc 2']} - \${txhuRes['xúc xắc 3']}\`;
                 }
 
-                console.log(`🎲 KQ: ${d1}-${d2}-${d3} | Tổng: ${tong} (${kq})`);
-                console.log(`➡ Phiên mới: ${DATA.phien}`);
-
-                keep_alive_room(ws);
-            }
+                if (!md5Res.error) {
+                    document.getElementById('md5-s').innerText = '#' + md5Res['Phiên trước'];
+                    const resEl = document.getElementById('md5-res');
+                    resEl.innerText = md5Res['kết quả'];
+                    resEl.className = 'result-val ' + (md5Res['kết quả'] === 'TÀI' ? 'tai' : 'xiu');
+                    document.getElementById('md5-dice').innerText = \`\${md5Res['xúc xắc 1']} - \${md5Res['xúc xắc 2']} - \${md5Res['xúc xắc 3']}\`;
+                }
+                prog.style.width = '100%';
+                setTimeout(() => prog.style.width = '0%', 400);
+            } catch (e) { console.error(e); }
         }
 
-        if (text.includes("mnmdsbgamestart")) {
-            const md5_match = text.match(/[a-f0-9]{32}/);
-            if (md5_match) {
-                const md5 = md5_match[0];
-                DATA.md5 = md5;
-                
-                const phien_hien_tai = DATA.phien || "Đang chờ đồng bộ...";
-                console.log(`🔥 Bắt đầu Phiên [${phien_hien_tai}] - MD5: ${md5}`);
-                
-                const dubao = predictFromMD5(md5);
-                console.log(`📊 DỰ ĐOÁN: ${dubao.ketqua} - Tỷ lệ: ${dubao.tile}`);
-                console.log(`🎯 Dự đoán 3 số: [${dubao.dubao_3so}] = ${dubao.tong_dubao}`);
-                console.log(`📈 TÀI: ${dubao.tai} | XỈU: ${dubao.xiu}`);
-            }
+        function refetchToken() {
+            if(!confirm('Xác nhận chạy script lấy Token tự động?\\n(Quá trình mất 1-2 phút)')) return;
+            fetch('/api/refetch').then(() => alert('Đã gửi yêu cầu lấy Token! Vui lòng chờ...'));
         }
-    } catch (e) {
-        console.log(`[ERROR_PARSE] ${e.message}`);
-    }
-}
 
-function on_error(ws, error) {
-    // pass
-}
-
-function on_close(ws, code, msg) {
-    console.log(`⚠️ Mất kết nối. Đang thử kết nối lại...`);
-}
-
-function start_ws_loop() {
-    function connect() {
-        const ws = new WebSocket(WS_URL);
-        
-        ws.on('open', () => on_open(ws));
-        ws.on('message', (data) => on_message(ws, data));
-        ws.on('error', (error) => on_error(ws, error));
-        ws.on('close', (code, msg) => {
-            on_close(ws, code, msg);
-            setTimeout(connect, 3000);
-        });
-        
-        return ws;
-    }
-    
-    connect();
-}
-
-// ======================
-// START ALL
-// ======================
-if (require.main === module) {
-    start_ws_loop();
-    console.log("🚀 API Server đang khởi động...");
-    const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => {
-        console.log(`🌐 Server: http://localhost:${PORT}`);
-        console.log(`📡 API: http://localhost:${PORT}/68gb`);
-        console.log(`🧪 Test: http://localhost:${PORT}/test/08a1dd8856b5a5386a792e380a8380c8`);
-    });
+        setInterval(updateData, 5000);
+        updateData();
+    </script>
+</body>
+</html>
+    `;
         }
